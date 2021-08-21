@@ -1,47 +1,39 @@
-# git clone https://github.com/PaddlePaddle/PaddleDetection
-# iterately go through each markdown file to 
-# - grab model config yaml and model pretrained pdparams file info from md file.
-# - grab all yml file
-# - then match pdparams to yml file
-
 import os
 import sys
-
-__dir__ = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(__dir__)
-sys.path.append(os.path.abspath(os.path.join(__dir__, '..')))
-
 import re
 import csv
 from pathlib import Path
 from bs4 import BeautifulSoup
 import markdown
+import requests
 
 from common import PDModelInfo
+from downloader_helper import download_pdparams, scrape_pdparams
+import base_downloader
 
-class PaddleDetScraper(object):
-    def __init__(self, homepage):
-        self.homepage = homepage
+class paddledetection_downloader(base_downloader.base_downloader):
+    def __init__(self, homepage, filter_data_file, bool_download, result_save_path):
+        super().__init__(homepage, filter_data_file, bool_download, result_save_path)
 
-    def __call__(self):
-        paths = Path(self.homepage).glob('**/*.md')
-        #print(len(list(paths))) # NOTE: in-place list op
+    def get_markdown_file_list(self):
+        self.md_list = Path(self.homepage).glob('**/*.md')
+        return self.md_list
 
-        all_md_urls = set(()) # use set instead of list to avoid duplicate item
+    def get_all_pdparams_info_by_markdown_file(self):
         count_pdparams = 0
-        for path in paths:      
-            with open(path, 'r') as f:
+        for md_file in self.md_list:
+            with open(md_file, 'r') as f:
                 text = f.read()
                 html_text = markdown.markdown(text)
 
                 soup = BeautifulSoup(html_text, 'html.parser')
 
-                tracks_pdparams = soup.find_all('a', attrs={'href': re.compile(r'\.pdparams$')}, string=re.compile(r'^((?!\().)*$'))            
+                tracks_pdparams = soup.find_all('a', attrs={'href': re.compile(r'\.pdparams$')}, string=re.compile(r'^((?!\().)*$'))
 
                 if len(list(tracks_pdparams))>0:
                     # debugging
-                    tracks_ymls = soup.find_all('a', attrs={'href': re.compile(r'\.yml$|\.yaml$')}, string=re.compile(r'^((?!\().)*$')) # either yml or yaml   
-                    print(path, len(list(tracks_pdparams)), len(tracks_ymls))
+                    tracks_ymls = soup.find_all('a', attrs={'href': re.compile(r'\.yml$|\.yaml$')}, string=re.compile(r'^((?!\().)*$')) # either yml or yaml
+                    # print(md_file, len(list(tracks_pdparams)), len(tracks_ymls))
                     count_pdparams += len(list(tracks_pdparams))
 
                     for track in tracks_pdparams:
@@ -51,18 +43,12 @@ class PaddleDetScraper(object):
 
                         configs_url = '{}'.format(track_config['href'])
                         pdparams_url = '{}'.format(track['href'])
-                        all_md_urls.add((configs_url, pdparams_url))
-        print(len(all_md_urls), count_pdparams)
-        return all_md_urls
+                        self.all_pdparams_urls_filtered.add((configs_url, pdparams_url))
+        # print(len(self.all_pdparams_urls_filtered), count_pdparams)
+        return self.all_pdparams_urls_filtered
 
-class PaddleDetFilter(object):
-    def __init__(self, filter):
-        self.filter = filter
-
-    def __call__(self, all_md_urls, downdload=False):
-        # collect model info of OMZ, cache to csv
-        models = []
-        with open(self.filter, newline='') as csvfile:
+    def pdparams_filter_and_download(self):
+        with open(self.filter_data_file, newline='') as csvfile:
             reader = csv.reader(csvfile, delimiter=',', quotechar='|')
             for row in reader:
                 config_yaml = row[1] # configs/.../*.yml
@@ -72,51 +58,51 @@ class PaddleDetFilter(object):
                 cur_pdprams_url = ''
 
                 # find the best matcher which is highly possible to be the correct config yml.
-                for (config_url, pdprams_url) in all_md_urls:
+                for (config_url, pdprams_url) in self.all_pdparams_urls_filtered:
                       if re.search(config_yaml+'$', config_url):
                         cur_pdprams_url = pdprams_url
-                        models.append(PDModelInfo(row[0], config_yaml, cur_pdprams_url)) # possible more than one pdparams matches config yml , e.g. slim
-                
+                        self.models.append(PDModelInfo(row[0], config_yaml, cur_pdprams_url)) # possible more than one pdparams matches config yml , e.g. slim
+
                 # second chance, to match basename only
                 if not cur_pdprams_url:
-                    config_base = os.path.basename(config_yaml)             
-                    for (config_url, pdprams_url) in all_md_urls:
+                    config_base = os.path.basename(config_yaml)
+                    for (config_url, pdprams_url) in self.all_pdparams_urls_filtered:
                         # print(config_yaml, config_url, re.match(config_yaml, config_url))
                         if re.search(config_base, config_url):
                             cur_pdprams_url = pdprams_url
-                            models.append(PDModelInfo(row[0], config_yaml, cur_pdprams_url))            
-               
+                            self.models.append(PDModelInfo(row[0], config_yaml, cur_pdprams_url))
+
                 # if still fail, throw exception to check scrapy rules.
                 if not cur_pdprams_url:
                     print('failed to get pdparams for {}, {}'.format(row[0], config_yaml))
-                    continue        
-        return models
-        
-def main(args):
-    # scraper
-    det_scaper = PaddleDetScraper(homepage=os.path.abspath(os.path.join(__dir__, '../../PaddleDetection')))   
-    all_md_urls = det_scaper()
-    with open('paddledet_full.csv', 'w', newline='') as csvfile: # cache urls for debugging
-        headerList = ['pdconfig_url', 'pdparams_url']
-        dw = csv.DictWriter(csvfile, delimiter=',', 
-                            fieldnames=headerList)
-        dw.writeheader()        
-        writer = csv.writer(csvfile, delimiter=',')
-        writer.writerows(all_md_urls)
+                    continue
 
-    # filter
-    det_filter = PaddleDetFilter('../data/paddledet.csv')
-    models = det_filter(all_md_urls)
-    with open('paddledet_filtered.csv', 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile, delimiter=',')
-        writer.writerows(models)   
+            # write file and download
+            if not os.path.exists(self.result_save_path):
+                os.makedirs(self.result_save_path)
+
+            result_file_name = os.path.join(self.result_save_path, "paddledet_full.csv")
+            with open(result_file_name, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile, delimiter=',')
+                writer.writerows(self.models)
+
+            # download
+            if self.bool_download:
+                for m in self.models:
+                    download_pdparams(m.pdparams, self.result_save_path)
+
+        return self.models
 
 if __name__ == "__main__":
-    import pandas
-    from utils import parse_args
- 
-    args = parse_args()    
-    main(args) 
+    dirname = os.path.dirname(sys.argv[0])
+    bool_download = 0
+    if not dirname:
+        dirname = ""
+    if len(sys.argv) > 1:
+        bool_download = 1
 
-    # display
-    print(pandas.read_csv('paddledet_filtered.csv'))    
+    filter_file_path = os.path.join(dirname, "../data/paddledet.csv")
+    result_path_save_path = os.path.join(dirname, "./result/paddledet_result") 
+
+    downloader = paddledetection_downloader("/home/huzhaoyang/Working/PaddleDetection", filter_file_path, bool_download, result_path_save_path)
+    downloader.run()

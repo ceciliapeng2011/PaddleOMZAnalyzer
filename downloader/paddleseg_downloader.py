@@ -97,6 +97,15 @@ class paddleseg_downloader(base_downloader.base_downloader):
         return self.models
 
 if __name__ == "__main__":
+    dirname = os.path.dirname(sys.argv[0])
+    bool_download = 0
+    if not dirname:
+        dirname = ""
+    if len(sys.argv) > 1:
+        bool_download = 1
 
-    downloader = paddleseg_downloader("/home/huzhaoyang/Working/PaddleSeg", "../data/paddleseg.csv", 0, "./paddleseg_result")
+    filter_file_path = os.path.join(dirname, "../data/paddleseg.csv")
+    result_path_save_path = os.path.join(dirname, "./result/paddleseg_result") 
+
+    downloader = paddleseg_downloader("/home/huzhaoyang/Working/PaddleSeg", filter_file_path, bool_download, result_path_save_path)
     downloader.run()
